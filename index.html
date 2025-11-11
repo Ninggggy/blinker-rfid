@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RFID 管理端</title>
+
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 10px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        #header {
+            width: 100%; /* 这个 div 用来规避 Blinker APP 的顶部栏 */
+        }
+        .container {
+            padding: 10px;
+        }
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 15px;
+            padding: 15px;
+        }
+        .card-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #000;
+            margin-bottom: 10px;
+        }
+        /* 提示区 */
+        #notification-area {
+            font-size: 1.1em;
+            font-weight: 500;
+            padding: 15px;
+            border-radius: 6px;
+            min-height: 25px;
+            background-color: #eee;
+            color: #555;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+        /* 当前UID显示区 */
+        #uid-display {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.2em;
+            color: #007aff;
+            background-color: #eef;
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+            min-height: 20px;
+            word-wrap: break-word; /* 自动换行 */
+        }
+        /* 按键样式 */
+        .button-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .btn {
+            padding: 15px;
+            font-size: 1em;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .btn-add {
+            background-color: #34c759; /* 绿色 */
+            color: white;
+        }
+        .btn-delete {
+            background-color: #ff3b30; /* 红色 */
+            color: white;
+        }
+        .btn-cancel {
+            background-color: #8e8e93; /* 灰色 */
+            color: white;
+            grid-column: 1 / -1; /* 横跨两列 */
+        }
+    </style>
+</head>
+
+<body>
+    <div id="header"></div>
+
+    <div class="container">
+
+        <div class="card">
+            <div class="card-title">系统状态 (提示区)</div>
+            <div id="notification-area">请选择操作或刷卡</div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">上次读取卡片 UID (查询)</div>
+            <div id="uid-display">N/A</div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">管理功能 (增/删)</div>
+            <div class="button-grid">
+                <button class="btn btn-add" onclick="enterAddMode()">添加卡片</button>
+                <button class="btn btn-delete" onclick="enterDeleteMode()">删除卡片</button>
+                <button class="btn btn-cancel" onclick="cancelOperation()">取消操作 (返回查询模式)</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 获取关键的 DOM 元素
+        var notificationArea = document.getElementById("notification-area");
+        var uidDisplay = document.getElementById("uid-display");
+
+        // 用一个对象来存储从ESP32收到的所有状态
+        var appData = {};
+
+        // ------------------------------------
+        // (A) 向 ESP32 发送指令
+        // ------------------------------------
+        
+        // 封装好的通信函数
+        function send2Device(data) {
+            console.log("Sending to device:", data); // 在PWA测试时方便调试
+            window.parent.postMessage(data, '*');
+        }
+
+        // 模式说明:
+        // 0 = 正常查询/刷卡模式 (默认)
+        // 1 = 等待添加模式
+        // 2 = 等待删除模式
+
+        // "添加卡片" 按键
+        function enterAddMode() {
+            // 向ESP32发送 {"mode": 1}
+            send2Device({ "mode": 1 });
+            
+            // 更新本地界面
+            updateNotification("进入添加模式，请刷一张新卡...", "blue");
+            uidDisplay.innerText = "等待新卡...";
+        }
+
+        // "删除卡片" 按键
+        function enterDeleteMode() {
+            // 向ESP32发送 {"mode": 2}
+            send2Device({ "mode": 2 });
+
+            // 更新本地界面
+            updateNotification("进入删除模式，请刷要删除的卡...", "red");
+            uidDisplay.innerText = "等待删除卡...";
+        }
+        
+        // "取消操作" 按键
+        function cancelOperation() {
+            // 向ESP32发送 {"mode": 0} 来重置它的状态
+            send2Device({ "mode": 0 });
+
+            // 更新本地界面
+            updateNotification("操作已取消，返回正常刷卡模式", "gray");
+            uidDisplay.innerText = "N/A";
+        }
+
+        // ------------------------------------
+        // (B) 接收来自 ESP32 的消息
+        // ------------------------------------
+
+        // 监听所有来自 Blinker APP (即ESP32) 的消息
+        window.addEventListener("message", receiveMessage, false);
+
+        function receiveMessage(e) {
+            // 调试用：在PWA测试时，在浏览器的控制台查看ESP32发来的原始数据
+            console.log("Received from device:", e.data);
+
+            // 规避APP顶部栏 (Blinker的必要操作)
+            if (e.data.headerHeight) {
+                document.getElementById('header').style.height = e.data.headerHeight + 'px';
+            }
+
+            // 把ESP32发来的新数据合并到我们的状态对象中
+            Object.assign(appData, e.data);
+
+            // --- 核心逻辑：根据ESP32发来的 "status" 字段，更新界面 ---
+            
+            // 确保 deviceData 和 status 存在
+            if (appData.deviceData && appData.deviceData.status) {
+                
+                var status = appData.deviceData.status;
+                var uid = appData.deviceData.uid || "N/A"; // 获取UID，如果不存在则显示 N/A
+                
+                // 统一更新UID显示区
+                uidDisplay.innerText = uid;
+
+                // 根据不同状态，更新提示区
+                switch (status) {
+                    // 正常刷卡模式
+                    case "normal_grant":
+                        updateNotification("欢迎！门已开启。", "green");
+                        break;
+                    case "normal_deny":
+                        updateNotification("非法卡片！拒绝访问。", "red");
+                        break;
+                    
+                    // 添加模式的回调
+                    case "add_success":
+                        updateNotification("添加成功！已返回正常模式。", "green");
+                        break;
+                    case "add_fail_exists":
+                        updateNotification("添加失败：卡片已存在！", "orange");
+                        break;
+                    
+                    // 删除模式的回调
+                    case "del_success":
+                        updateNotification("删除成功！已返回正常模式。", "green");
+                        break;
+                    case "del_fail_notfound":
+                        updateNotification("删除失败：白名单中未找到此卡！", "orange");
+                        break;
+                    
+                    // 扫描失败
+                    case "scan_fail":
+                        updateNotification("读取失败，请重试", "orange");
+                        uidDisplay.innerText = "读取失败";
+                        break;
+
+                    // ESP32 重置模式 (例如添加/删除完成后)
+                    case "mode_reset":
+                        updateNotification("已返回正常刷卡模式", "gray");
+                        break;
+                }
+            }
+        }
+        
+        // 辅助函数：更新提示区的文字和颜色
+        function updateNotification(message, color) {
+            notificationArea.innerText = message;
+            
+            // 重置颜色
+            notificationArea.style.color = "#333";
+            notificationArea.style.backgroundColor = "#eee";
+
+            if (color === "green") {
+                notificationArea.style.backgroundColor = "#d4edda";
+                notificationArea.style.color = "#155724";
+            } else if (color === "red") {
+                notificationArea.style.backgroundColor = "#f8d7da";
+                notificationArea.style.color = "#721c24";
+            } else if (color === "blue") {
+                notificationArea.style.backgroundColor = "#cce5ff";
+                notificationArea.style.color = "#004085";
+            } else if (color === "orange") {
+                notificationArea.style.backgroundColor = "#fff3cd";
+                notificationArea.style.color = "#856404";
+            } else if (color === "gray") {
+                notificationArea.style.backgroundColor = "#e2e3e5";
+                notificationArea.style.color = "#383d41";
+            }
+        }
+
+        // ------------------------------------
+        // (C) 页面加载完成后，必须发送一个空消息
+        // ------------------------------------
+        window.onload = function() {
+            send2Device({}); // 告知Blinker APP，这个网页已经准备好了
+            console.log("Customizer page loaded and ready.");
+        };
+
+    </script>
+</body>
+</html>
